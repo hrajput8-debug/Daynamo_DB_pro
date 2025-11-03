@@ -13,67 +13,33 @@
 # limitations under the License.
 
 
-rom .setupDynamoDB import getDynamoDBConnection, createGamesTable
-from uuid import uuid4
+import boto3
 from botocore.exceptions import ClientError
 
-class ConnectionManager:
+def getDynamoDBConnection(config=None, endpoint=None, port=None, local=False, use_instance_metadata=False):
+    if local:
+        return boto3.resource('dynamodb', endpoint_url=f"http://{endpoint}:{port}")
+    else:
+        return boto3.resource('dynamodb')
 
-    def __init__(self, mode=None, config=None, endpoint=None, port=None, use_instance_metadata=False):
-        self.db = None
-        self.gamesTable = None
-
-        if mode == "local":
-            if config is not None:
-                raise Exception('Cannot specify config when in local mode')
-            if endpoint is None:
-                endpoint = "http://localhost"
-            if port is None:
-                port = 8000
-            self.db = getDynamoDBConnection(endpoint=f"{endpoint}:{port}", local=True)
-
-        elif mode == "service":
-            self.db = getDynamoDBConnection(
-                config=config,
-                endpoint=endpoint,
-                use_instance_metadata=use_instance_metadata
-            )
+def createGamesTable(db):
+    try:
+        table = db.create_table(
+            TableName='Games',
+            KeySchema=[
+                {'AttributeName': 'GameId', 'KeyType': 'HASH'}
+            ],
+            AttributeDefinitions=[
+                {'AttributeName': 'GameId', 'AttributeType': 'S'}
+            ],
+            BillingMode='PAY_PER_REQUEST'
+        )
+        table.wait_until_exists()
+        print("✅ Games table created.")
+        return table
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'ResourceInUseException':
+            print("ℹ️ Games table already exists.")
+            return db.Table('Games')
         else:
-            raise Exception("Invalid arguments, please refer to usage.")
-
-        self.setupGamesTable()
-
-    def setupGamesTable(self):
-        try:
-            # Try getting existing table
-            self.gamesTable = self.db.Table("Games")
-            # Force metadata load → ensures table exists
-            self.gamesTable.load()
-            print("✅ Games table loaded successfully.")
-        except ClientError as e:
-            if e.response['Error']['Code'] == "ResourceNotFoundException":
-                print("⚠️ Games table not found → Creating new one…")
-                self.gamesTable = createGamesTable(self.db)
-            else:
-                raise e
-
-    def getGamesTable(self):
-        if self.gamesTable is None:
-            self.setupGamesTable()
-        return self.gamesTable
-
-    def createGamesEntry(self, hostId, opponentId, statusDate, extraData=None):
-        if extraData is None:
-            extraData = {}
-
-        item = {
-            "GameId": str(uuid4()),
-            "HostId": hostId,
-            "OpponentId": opponentId,
-            "StatusDate": statusDate,
-            **extraData
-        }
-
-        table = self.getGamesTable()
-        table.put_item(Item=item)
-        return item
+            raise e
