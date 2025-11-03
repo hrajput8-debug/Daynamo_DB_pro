@@ -12,51 +12,25 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import argparse
-import configparser
-from dynamodb.connectionManager import ConnectionManager
+def getDynamoDBConnection(config=None, endpoint=None, port=None, local=False, use_instance_metadata=False):
+    if local:
+        return boto3.resource('dynamodb', endpoint_url=f"http://{endpoint}:{port}")
+    else:
+        return boto3.resource('dynamodb')
 
-from flask import Flask, jsonify
-
-app = Flask(__name__)
-connection_manager = None
-
-
-@app.route("/")
-def home():
-    return jsonify({"message": "DynamoDB App Running Successfully ✅"})
-
-
-@app.route("/games")
-def get_games():
-    table = connection_manager.getGamesTable()
-    response = table.scan()
-    data = response.get("Items", [])
-    return jsonify(data)
-
-
-def start_server(port):
-    app.run(host="0.0.0.0", port=port)
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", help="Path to config.ini file", default=None)
-    parser.add_argument("--mode", help="Mode: 'service' or 'local'", required=True)
-    parser.add_argument("--endpoint", help="DynamoDB endpoint (optional)", default=None)
-    parser.add_argument("--serverPort", help="Port for Flask server", default=5000)
-    parser.add_argument("--useMetadata", help="Use EC2 instance metadata", action="store_true")
-
-    args = parser.parse_args()
-
-    config = None
-    if args.config:
-        config = configparser.ConfigParser()
-        config.read(args.config)
-
-    connection_manager = ConnectionManager(
-        mode=args.mode,
-        config=config,
-        endpoint=args.endpoint,
-        port=None,
-        use_instance_meta
+def createGamesTable(db):
+    try:
+        table = db.create_table(
+            TableName='Games',
+            KeySchema=[
+                {'AttributeName': 'GameId', 'KeyType': 'HASH'}
+            ],
+            AttributeDefinitions=[
+                {'AttributeName': 'GameId', 'AttributeType': 'S'}
+            ],
+            BillingMode='PAY_PER_REQUEST'
+        )
+        table.wait_until_exists()
+        return table
+    except ClientError:
+        return db.Table('Games')
