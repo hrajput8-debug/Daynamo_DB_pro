@@ -1,7 +1,5 @@
-from boto.exception import JSONResponseError
-from boto.dynamodb2.fields import KeysOnlyIndex, GlobalAllIndex, HashKey, RangeKey
-from boto.dynamodb2.layer1 import DynamoDBConnection
-from boto.dynamodb2.table import Table
+import boto3
+from botocore.exceptions import ClientError
 
 try:
     from urllib.request import urlopen
@@ -9,70 +7,80 @@ except ImportError:
     from urllib2 import urlopen
 import json
 
-def getDynamoDBConnection(config=None, endpoint=None, port=None, local=False, use_instance_metadata=False):
-    params = {
-        'is_secure': True
-    }
 
-    # Read from config file, if provided
+def getDynamoDBConnection(config=None, endpoint=None, port=None, local=False, use_instance_metadata=False):
+    session_kwargs = {}
+    resource_kwargs = {}
+
+    # If region in config file
     if config is not None:
         if config.has_option('dynamodb', 'region'):
-            params['region'] = config.get('dynamodb', 'region')
-        if config.has_option('dynamodb', 'endpoint'):
-            params['host'] = config.get('dynamodb', 'endpoint')
+            session_kwargs['region_name'] = config.get('dynamodb', 'region')
 
-    # Use the endpoint specified on the command-line to trump the config file
+    # Command-line endpoint override
     if endpoint is not None:
-        params['host'] = endpoint
-        if 'region' in params:
-            del params['region']
+        resource_kwargs['endpoint_url'] = f"https://{endpoint}"
 
-    # Only auto-detect the DynamoDB endpoint if the endpoint was not specified through other config
-    if 'host' not in params and use_instance_metadata:
+    # Use EC2 metadata to get region
+    if 'region_name' not in session_kwargs and use_instance_metadata:
         response = urlopen('http://169.254.169.254/latest/dynamic/instance-identity/document').read()
         doc = json.loads(response)
-        params['host'] = 'dynamodb.%s.amazonaws.com' % (doc['region'])
-        if 'region' in params:
-            del params['region']
+        session_kwargs['region_name'] = doc['region']
 
-    db = DynamoDBConnection(**params)
-    return db
+    # Default region if none set
+    if 'region_name' not in session_kwargs:
+        session_kwargs['region_name'] = 'us-east-1'
+
+    dynamodb = boto3.resource('dynamodb', **resource_kwargs, **session_kwargs)
+    return dynamodb
+
 
 def createGamesTable(db):
     try:
-        hostStatusDate = GlobalAllIndex("HostId-StatusDate-index",
-                                        parts=[HashKey("HostId"), RangeKey("StatusDate")],
-                                        throughput={
-                                            'read': 1,
-                                            'write': 1
-                                        })
-        opponentStatusDate = GlobalAllIndex("OpponentId-StatusDate-index",
-                                            parts=[HashKey("OpponentId"), RangeKey("StatusDate")],
-                                            throughput={
-                                                'read': 1,
-                                                'write': 1
-                                            })
+        table = db.create_table(
+            TableName="Games",
+            KeySchema=[
+                {"AttributeName": "GameId", "KeyType": "HASH"}
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "GameId", "AttributeType": "S"},
+                {"AttributeName": "HostId", "AttributeType": "S"},
+                {"AttributeName": "StatusDate", "AttributeType": "S"},
+                {"AttributeName": "OpponentId", "AttributeType": "S"},
+            ],
+            GlobalSecondaryIndexes=[
+                {
+                    "IndexName": "HostId-StatusDate-index",
+                    "KeySchema": [
+                        {"AttributeName": "HostId", "KeyType": "HASH"},
+                        {"AttributeName": "StatusDate", "KeyType": "RANGE"}
+                    ],
+                    "Projection": {"ProjectionType": "ALL"},
+                    "ProvisionedThroughput": {"ReadCapacityUnits": 1, "WriteCapacityUnits": 1}
+                },
+                {
+                    "IndexName": "OpponentId-StatusDate-index",
+                    "KeySchema": [
+                        {"AttributeName": "OpponentId", "KeyType": "HASH"},
+                        {"AttributeName": "StatusDate", "KeyType": "RANGE"}
+                    ],
+                    "Projection": {"ProjectionType": "ALL"},
+                    "ProvisionedThroughput": {"ReadCapacityUnits": 1, "WriteCapacityUnits": 1}
+                }
+            ],
+            ProvisionedThroughput={'ReadCapacityUnits': 1, 'WriteCapacityUnits': 1}
+        )
 
-        # Global secondary indexes
-        GSI = [hostStatusDate, opponentStatusDate]
+        table.wait_until_exists()
+        print("✅ Games table created successfully.")
 
-        # Use IAM role credentials by omitting aws_access_key_id and aws_secret_access_key
-        gamesTable = Table.create("Games",
-                                  schema=[HashKey("GameId")],
-                                  throughput={
-                                      'read': 1,
-                                      'write': 1
-                                  },
-                                  global_indexes=GSI,
-                                  connection=db)
+    except ClientError as e:
+        if e.response['Error']['Code'] == "ResourceInUseException":
+            print("ℹ️ Games table already exists.")
+            table = db.Table("Games")
+        else:
+            raise e
 
-    except JSONResponseError as jre:
-        try:
-            gamesTable = Table("Games", connection=db)
-        except Exception as e:
-            print("Games Table doesn't exist.")
-
-    finally:
-        return gamesTable
+    return table
 
 
