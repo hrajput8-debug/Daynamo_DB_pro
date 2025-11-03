@@ -1,5 +1,5 @@
+
 import boto3
-from botocore.exceptions import ClientError
 
 def getDynamoDBConnection(config=None, endpoint=None, port=None, local=False, use_instance_metadata=False):
     if local:
