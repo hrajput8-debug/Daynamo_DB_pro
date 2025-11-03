@@ -11,35 +11,35 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-
 import boto3
-from botocore.exceptions import ClientError
+from .setupDynamoDB import getDynamoDBConnection, createGamesTable
 
-def getDynamoDBConnection(config=None, endpoint=None, port=None, local=False, use_instance_metadata=False):
-    if local:
-        return boto3.resource('dynamodb', endpoint_url=f"http://{endpoint}:{port}")
-    else:
-        return boto3.resource('dynamodb')
+class ConnectionManager:
+    def __init__(self, mode=None, config=None, endpoint=None, port=None, use_instance_metadata=False):
+        self.db = None
+        self.gamesTable = None
 
-def createGamesTable(db):
-    try:
-        table = db.create_table(
-            TableName='Games',
-            KeySchema=[
-                {'AttributeName': 'GameId', 'KeyType': 'HASH'}
-            ],
-            AttributeDefinitions=[
-                {'AttributeName': 'GameId', 'AttributeType': 'S'}
-            ],
-            BillingMode='PAY_PER_REQUEST'
-        )
-        table.wait_until_exists()
-        print("✅ Games table created.")
-        return table
-    except ClientError as e:
-        if e.response['Error']['Code'] == 'ResourceInUseException':
-            print("ℹ️ Games table already exists.")
-            return db.Table('Games')
+        if mode == "local":
+            if endpoint is None:
+                endpoint = 'localhost'
+            if port is None:
+                port = 8000
+            self.db = getDynamoDBConnection(endpoint=endpoint, port=port, local=True)
+        elif mode == "service":
+            self.db = getDynamoDBConnection(config=config, endpoint=endpoint, use_instance_metadata=use_instance_metadata)
         else:
-            raise e
+            raise Exception("Invalid arguments")
+
+        self.setupGamesTable()
+
+    def setupGamesTable(self):
+        try:
+            self.gamesTable = self.db.Table('Games')
+        except Exception:
+            self.gamesTable = createGamesTable(self.db)
+
+    def getGamesTable(self):
+        return self.gamesTable
+
+    def createGamesTable(self):
+        self.gamesTable = createGamesTable(self.db)
